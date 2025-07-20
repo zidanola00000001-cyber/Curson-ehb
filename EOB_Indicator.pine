@@ -1,0 +1,385 @@
+//@version=5
+indicator("Advanced EOB Indicator", overlay=true, max_boxes_count=500, max_lines_count=500)
+
+// ============================================================================
+// INPUT SETTINGS
+// ============================================================================
+
+// General Settings
+group_general = "🔧 General Settings"
+use_confirmation = input.bool(true, "Use Confirmation", group=group_general, tooltip="Require confirmation candle for EOB identification")
+wick_close_toggle = input.bool(true, "Wick Close Toggle", group=group_general, tooltip="Include wick in close calculations")
+body_close_toggle = input.bool(false, "Body Close Toggle", group=group_general, tooltip="Use body close instead of full candle close")
+
+// Multi-Timeframe Settings
+group_mtf = "📈 Multi-Timeframe (HTF) Settings"
+show_1w_eob = input.bool(false, "Show 1 Week EOB", group=group_mtf)
+show_1d_eob = input.bool(true, "Show 1 Day EOB", group=group_mtf)
+show_4h_eob = input.bool(true, "Show 4hr EOB", group=group_mtf)
+show_2h_eob = input.bool(false, "Show 2hr EOB", group=group_mtf)
+
+// Lower Timeframe Settings
+group_ltf = "📊 Lower Timeframe (LTF) Settings"
+show_1h_eob = input.bool(true, "Show 1hr EOB", group=group_ltf)
+show_30m_eob = input.bool(false, "Show 30 mins EOB", group=group_ltf)
+show_15m_eob = input.bool(false, "Show 15 mins EOB", group=group_ltf)
+show_5m_eob = input.bool(false, "Show 5 mins EOB", group=group_ltf)
+show_3m_eob = input.bool(false, "Show 3 mins EOB", group=group_ltf)
+
+// HTF EOB Visibility
+group_htf_vis = "🔍 HTF EOB Visibility"
+show_htf_in_ltf = input.bool(true, "Show HTF EOBs in Lower Timeframe", group=group_htf_vis, tooltip="Display higher timeframe EOBs on current chart")
+
+// LTF EOB Settings (1h chart specific)
+group_ltf_settings = "⚙️ LTF EOB Settings (1h Chart)"
+ltf_eob_width = input.int(2, "EOB Width", minval=1, maxval=10, group=group_ltf_settings, tooltip="Customize width of EOB zones")
+show_eq = input.bool(true, "Show Equilibrium (EQ)", group=group_ltf_settings, tooltip="Display equilibrium line within EOB")
+extend_eob = input.bool(true, "Extend EOB", group=group_ltf_settings, tooltip="Extend EOB zones to the right")
+
+// Mitigation Settings
+group_mitigation = "🎯 Mitigation Settings"
+mitigate_on_full = input.bool(true, "Mitigate on Full Fill", group=group_mitigation, tooltip="Mark EOB as mitigated when fully filled")
+mitigate_on_half = input.bool(false, "Mitigate on 50% Fill", group=group_mitigation, tooltip="Mark EOB as mitigated when 50% filled")
+delete_mitigated = input.bool(false, "Delete Mitigated EOBs", group=group_mitigation, tooltip="Remove mitigated EOBs from chart")
+
+// Color Settings
+group_colors = "🎨 Color Settings"
+bullish_eob_color = input.color(color.new(color.green, 80), "Bullish EOB Color", group=group_colors)
+bearish_eob_color = input.color(color.new(color.red, 80), "Bearish EOB Color", group=group_colors)
+partial_mitigated_color = input.color(color.new(color.orange, 60), "Partially Mitigated Color", group=group_colors)
+eq_line_color = input.color(color.new(color.blue, 30), "Equilibrium Line Color", group=group_colors)
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Function to check if current timeframe matches target
+is_timeframe_enabled(tf_string) =>
+    switch tf_string
+        "1W" => show_1w_eob
+        "1D" => show_1d_eob
+        "4H" => show_4h_eob
+        "2H" => show_2h_eob
+        "1H" => show_1h_eob
+        "30" => show_30m_eob
+        "15" => show_15m_eob
+        "5" => show_5m_eob
+        "3" => show_3m_eob
+        => false
+
+// Function to detect decent sized wick
+has_decent_wick_bottom(candle_index) =>
+    body_size = math.abs(close[candle_index] - open[candle_index])
+    wick_size = math.abs(low[candle_index] - math.min(close[candle_index], open[candle_index]))
+    wick_size >= body_size * 0.3 // Wick should be at least 30% of body size
+
+has_decent_wick_top(candle_index) =>
+    body_size = math.abs(close[candle_index] - open[candle_index])
+    wick_size = math.abs(high[candle_index] - math.max(close[candle_index], open[candle_index]))
+    wick_size >= body_size * 0.3 // Wick should be at least 30% of body size
+
+// Function to check if candle is bullish
+is_bullish(candle_index) =>
+    close[candle_index] > open[candle_index]
+
+// Function to check if candle is bearish
+is_bearish(candle_index) =>
+    close[candle_index] < open[candle_index]
+
+// Function to get candle close price (body or wick based on settings)
+get_close_price(candle_index) =>
+    if body_close_toggle
+        close[candle_index]
+    else if wick_close_toggle
+        close[candle_index]
+    else
+        close[candle_index]
+
+// ============================================================================
+// EOB IDENTIFICATION LOGIC
+// ============================================================================
+
+// Bearish EOB Identification
+identify_bearish_eob() =>
+    var bool bearish_eob_found = false
+    var float eob_high = na
+    var float eob_low = na
+    var int eob_start_bar = na
+    
+    // Setup Candle: Bullish candle with decent sized wick on bottom
+    setup_candle = is_bullish(1) and has_decent_wick_bottom(1)
+    
+    // Confirmation Candle: Current bearish candle closes below bullish candle body
+    confirmation_candle = is_bearish(0) and get_close_price(0) < math.min(close[1], open[1])
+    
+    if setup_candle and (not use_confirmation or confirmation_candle)
+        bearish_eob_found := true
+        eob_high := high[1]  // High of setup candle
+        eob_low := low[1]    // Low of setup candle (including wick)
+        eob_start_bar := bar_index - 1
+    
+    [bearish_eob_found, eob_high, eob_low, eob_start_bar]
+
+// Bullish EOB Identification  
+identify_bullish_eob() =>
+    var bool bullish_eob_found = false
+    var float eob_high = na
+    var float eob_low = na
+    var int eob_start_bar = na
+    
+    // Setup Candle: Bearish candle with decent sized wick on top
+    setup_candle = is_bearish(1) and has_decent_wick_top(1)
+    
+    // Confirmation Candle: Current bullish candle closes above bearish candle body
+    confirmation_candle = is_bullish(0) and get_close_price(0) > math.max(close[1], open[1])
+    
+    if setup_candle and (not use_confirmation or confirmation_candle)
+        bullish_eob_found := true
+        eob_high := high[1]  // High of setup candle (including wick)
+        eob_low := low[1]    // Low of setup candle
+        eob_start_bar := bar_index - 1
+    
+    [bullish_eob_found, eob_high, eob_low, eob_start_bar]
+
+// ============================================================================
+// EOB MANAGEMENT
+// ============================================================================
+
+// Type for EOB management
+type EOBData
+    float high
+    float low
+    int start_bar
+    bool is_bullish
+    bool is_mitigated
+    bool is_partially_mitigated
+    box eob_box
+    line eq_line
+    string timeframe
+
+// Array to store EOBs
+var array<EOBData> eobs = array.new<EOBData>()
+
+// Function to create EOB box
+create_eob_box(eob_data) =>
+    box_color = eob_data.is_bullish ? bullish_eob_color : bearish_eob_color
+    if eob_data.is_partially_mitigated
+        box_color := partial_mitigated_color
+    
+    extend_type = extend_eob ? extend.right : extend.none
+    
+    box.new(
+        left=eob_data.start_bar,
+        top=eob_data.high,
+        right=bar_index + 10,
+        bottom=eob_data.low,
+        border_color=color.new(box_color, 60),
+        bgcolor=box_color,
+        border_width=ltf_eob_width,
+        extend=extend_type
+    )
+
+// Function to create equilibrium line
+create_eq_line(eob_data) =>
+    if show_eq
+        eq_price = (eob_data.high + eob_data.low) / 2
+        extend_type = extend_eob ? extend.right : extend.none
+        
+        line.new(
+            x1=eob_data.start_bar,
+            y1=eq_price,
+            x2=bar_index + 10,
+            y2=eq_price,
+            color=eq_line_color,
+            style=line.style_dashed,
+            width=1,
+            extend=extend_type
+        )
+    else
+        na
+
+// Function to check EOB mitigation
+check_mitigation(eob_data) =>
+    eob_range = eob_data.high - eob_data.low
+    eq_level = eob_data.low + (eob_range / 2)
+    
+    if eob_data.is_bullish
+        // For bullish EOB, mitigation occurs when price moves back down
+        full_mitigation = low <= eob_data.low
+        half_mitigation = low <= eq_level
+    else
+        // For bearish EOB, mitigation occurs when price moves back up
+        full_mitigation = high >= eob_data.high
+        half_mitigation = high >= eq_level
+    
+    is_mitigated = mitigate_on_full and full_mitigation
+    is_partially_mitigated = mitigate_on_half and half_mitigation and not full_mitigation
+    
+    [is_mitigated, is_partially_mitigated]
+
+// Function to update EOB appearance based on mitigation
+update_eob_appearance(eob_data) =>
+    if not na(eob_data.eob_box)
+        new_color = eob_data.is_bullish ? bullish_eob_color : bearish_eob_color
+        if eob_data.is_partially_mitigated
+            new_color := partial_mitigated_color
+        
+        box.set_bgcolor(eob_data.eob_box, new_color)
+        box.set_border_color(eob_data.eob_box, color.new(new_color, 60))
+
+// ============================================================================
+// MULTI-TIMEFRAME EOB DETECTION
+// ============================================================================
+
+// Function to get EOBs from higher timeframes
+get_mtf_eobs(tf) =>
+    if is_timeframe_enabled(tf) and show_htf_in_ltf
+        [bearish_found, bearish_high, bearish_low, bearish_bar] = request.security(syminfo.tickerid, tf, identify_bearish_eob(), lookahead=barmerge.lookahead_off)
+        [bullish_found, bullish_high, bullish_low, bullish_bar] = request.security(syminfo.tickerid, tf, identify_bullish_eob(), lookahead=barmerge.lookahead_off)
+        
+        if bearish_found and not na(bearish_high)
+            eob_data = EOBData.new(
+                high=bearish_high,
+                low=bearish_low,
+                start_bar=bar_index,
+                is_bullish=false,
+                is_mitigated=false,
+                is_partially_mitigated=false,
+                eob_box=na,
+                eq_line=na,
+                timeframe=tf
+            )
+            array.push(eobs, eob_data)
+        
+        if bullish_found and not na(bullish_high)
+            eob_data = EOBData.new(
+                high=bullish_high,
+                low=bullish_low,
+                start_bar=bar_index,
+                is_bullish=true,
+                is_mitigated=false,
+                is_partially_mitigated=false,
+                eob_box=na,
+                eq_line=na,
+                timeframe=tf
+            )
+            array.push(eobs, eob_data)
+
+// ============================================================================
+// MAIN EXECUTION
+// ============================================================================
+
+// Detect current timeframe EOBs
+[bearish_found, bearish_high, bearish_low, bearish_bar] = identify_bearish_eob()
+[bullish_found, bullish_high, bullish_low, bullish_bar] = identify_bullish_eob()
+
+// Add current timeframe EOBs
+if bearish_found
+    eob_data = EOBData.new(
+        high=bearish_high,
+        low=bearish_low,
+        start_bar=bearish_bar,
+        is_bullish=false,
+        is_mitigated=false,
+        is_partially_mitigated=false,
+        eob_box=na,
+        eq_line=na,
+        timeframe=timeframe.period
+    )
+    array.push(eobs, eob_data)
+
+if bullish_found
+    eob_data = EOBData.new(
+        high=bullish_high,
+        low=bullish_low,
+        start_bar=bullish_bar,
+        is_bullish=true,
+        is_mitigated=false,
+        is_partially_mitigated=false,
+        eob_box=na,
+        eq_line=na,
+        timeframe=timeframe.period
+    )
+    array.push(eobs, eob_data)
+
+// Get MTF EOBs
+get_mtf_eobs("1W")
+get_mtf_eobs("1D")
+get_mtf_eobs("4H")
+get_mtf_eobs("2H")
+get_mtf_eobs("1H")
+get_mtf_eobs("30")
+get_mtf_eobs("15")
+get_mtf_eobs("5")
+get_mtf_eobs("3")
+
+// Process and display EOBs
+if array.size(eobs) > 0
+    for i = array.size(eobs) - 1 to 0
+        eob_data = array.get(eobs, i)
+        
+        // Check mitigation
+        [is_mitigated, is_partially_mitigated] = check_mitigation(eob_data)
+        eob_data.is_mitigated := is_mitigated
+        eob_data.is_partially_mitigated := is_partially_mitigated
+        
+        // Create or update visual elements
+        if na(eob_data.eob_box) and not (delete_mitigated and is_mitigated)
+            eob_data.eob_box := create_eob_box(eob_data)
+            eob_data.eq_line := create_eq_line(eob_data)
+        else if not na(eob_data.eob_box)
+            update_eob_appearance(eob_data)
+        
+        // Remove mitigated EOBs if option is enabled
+        if delete_mitigated and is_mitigated
+            if not na(eob_data.eob_box)
+                box.delete(eob_data.eob_box)
+            if not na(eob_data.eq_line)
+                line.delete(eob_data.eq_line)
+            array.remove(eobs, i)
+        else
+            array.set(eobs, i, eob_data)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+// Alert conditions
+alertcondition(bearish_found, title="Bearish EOB Detected", message="A new Bearish EOB has been identified")
+alertcondition(bullish_found, title="Bullish EOB Detected", message="A new Bullish EOB has been identified")
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+// Plot signals for debugging
+plotshape(bearish_found, title="Bearish EOB Signal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+plotshape(bullish_found, title="Bullish EOB Signal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+
+// ============================================================================
+// INFORMATION TABLE
+// ============================================================================
+
+// Create information table
+if show_htf_in_ltf
+    var table info_table = table.new(position.top_right, 3, 5, bgcolor=color.white, border_width=1)
+    
+    if barstate.islast
+        table.cell(info_table, 0, 0, "Timeframe", text_color=color.black, bgcolor=color.gray)
+        table.cell(info_table, 1, 0, "Bullish EOBs", text_color=color.black, bgcolor=color.gray)
+        table.cell(info_table, 2, 0, "Bearish EOBs", text_color=color.black, bgcolor=color.gray)
+        
+        bullish_count = 0
+        bearish_count = 0
+        
+        if array.size(eobs) > 0
+            for i = 0 to array.size(eobs) - 1
+                eob_data = array.get(eobs, i)
+                if eob_data.is_bullish
+                    bullish_count += 1
+                else
+                    bearish_count += 1
+        
+        table.cell(info_table, 0, 1, "Current TF", text_color=color.black)
+        table.cell(info_table, 1, 1, str.tostring(bullish_count), text_color=color.green)
+        table.cell(info_table, 2, 1, str.tostring(bearish_count), text_color=color.red)
