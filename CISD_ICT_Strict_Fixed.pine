@@ -147,7 +147,7 @@ if array.size(sslPrices) > 0
 
 // ── Sweep → wait for opposite displacement through sequence-start open
 var bool  waiting = false
-var bool  wantBull = na
+var bool  wantBull = false
 var float seqStartPrice = na
 var int   seqStartIndex = na
 
@@ -182,7 +182,7 @@ if waiting
 
 // ── Retest alerts
 var bool  waitingRetest = false
-var bool  retestIsBull  = na
+var bool  retestIsBull  = false
 var float retestPx      = na
 var int   retestUntil   = na
 
