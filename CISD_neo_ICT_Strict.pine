@@ -17,6 +17,7 @@ lineWidth = input.int(2, "Line Width", minval=1, maxval=5)
 lookAheadBars = input.int(15, "Line Extension Bars", minval=5, maxval=200)
 styleOption = input.string("Solid", title="Line Style", options=["Solid", "Dotted", "Dashed"])
 keepLevels = input.bool(true, "Keep old CISD levels")
+updateWindowBars = input.int(2000, "Update Window (bars)", minval=100, maxval=10000)
 
 // Logic
 swingStrength = input.int(3, "Swing Strength (BSL/SSL)", minval=2, maxval=10)
@@ -230,11 +231,15 @@ if barstate.islast
     if array.size(bullLines) > 0
         for i = 0 to array.size(bullLines) - 1
             l = array.get(bullLines, i)
-            line.set_x2(l, line.get_x1(l) + lookAheadBars)
+            x1 = line.get_x1(l)
+            if bar_index - x1 <= updateWindowBars
+                line.set_x2(l, x1 + lookAheadBars)
     if array.size(bearLines) > 0
         for i = 0 to array.size(bearLines) - 1
             l = array.get(bearLines, i)
-            line.set_x2(l, line.get_x1(l) + lookAheadBars)
+            x1 = line.get_x1(l)
+            if bar_index - x1 <= updateWindowBars
+                line.set_x2(l, x1 + lookAheadBars)
 
 // ====== Optional mini table ======
 if showTable and barstate.islast
