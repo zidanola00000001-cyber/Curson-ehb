@@ -241,6 +241,16 @@ if showTable and barstate.islast
     var tbl = table.new(getTablePos(tablePosition), 3, 2)
     table.cell(tbl, 0, 0, syminfo.ticker + ", " + timeframe.period + " neo|")
     table.cell(tbl, 1, 0, "Last CISD")
-    lastStateTxt = array.size(bullLines) > 0 and (array.size(bearLines) == 0 or line.get_x1(array.get(bullLines, array.size(bullLines)-1)) > line.get_x1(array.get(bearLines, array.size(bearLines)-1))) ? "Bullish" : "Bearish"
+    blSz = array.size(bullLines)
+    brSz = array.size(bearLines)
+    lastStateTxt = "None"
+    if blSz > 0 and brSz == 0
+        lastStateTxt := "Bullish"
+    else if brSz > 0 and blSz == 0
+        lastStateTxt := "Bearish"
+    else if blSz > 0 and brSz > 0
+        lastBull = array.get(bullLines, blSz - 1)
+        lastBear = array.get(bearLines, brSz - 1)
+        lastStateTxt := line.get_x1(lastBull) > line.get_x1(lastBear) ? "Bullish" : "Bearish"
     table.cell(tbl, 2, 0, lastStateTxt)
 
