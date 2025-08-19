@@ -1,0 +1,261 @@
+//@version=6
+indicator("CISD neo | ICT Strict", "CISD neo| ICT", overlay=true)
+
+// ====== Inputs (neo style) ======
+// Colors and labels
+bullCisdColor = input.color(color.new(color.green, 0), "Bull CISD Color", inline="c1")
+bearCisdColor = input.color(color.new(color.red,   0), "Bear CISD Color", inline="c1")
+bullStr = input.string("+CISD", "Bull Label", inline="t1")
+bearStr = input.string("-CISD", "Bear Label", inline="t1")
+
+// Alerts
+enableAlerts = input.bool(true, "Enable CISD Alerts")
+enableRetestAlerts = input.bool(true, "Enable Retest Alerts")
+
+// Line style
+lineWidth = input.int(2, "Line Width", minval=1, maxval=5)
+lookAheadBars = input.int(15, "Line Extension Bars", minval=5, maxval=200)
+styleOption = input.string("Solid", title="Line Style", options=["Solid", "Dotted", "Dashed"])
+keepLevels = input.bool(true, "Keep old CISD levels")
+updateWindowBars = input.int(2000, "Update Window (bars)", minval=100, maxval=10000)
+
+// Logic
+swingStrength = input.int(3, "Swing Strength (BSL/SSL)", minval=2, maxval=10)
+confirmMode   = input.string("FVG", "Displacement Confirm", options=["FVG","ATR","None"])
+atrLen        = input.int(14, "ATR Length")
+atrMult       = input.float(1.0, "ATR Multiplier", step=0.1)
+
+// Retest settings
+retestBars  = input.int(20, "Retest Window (bars)", minval=1, maxval=200)
+retestPct   = input.float(0.05, "Touch Tolerance (% of price)", step=0.01)
+
+// Optional table
+showTable = input.bool(false, title="Show State Table")
+tablePosition = input.string(defval="Top Right", title="Table Position", options=["Top Right", "Bottom Right", "Middle Right", "Bottom Center", "Middle Left"])
+
+// ====== Helpers ======
+getTablePos(pos) =>
+    switch pos
+        "Top Right" => position.top_right
+        "Bottom Right" => position.bottom_right
+        "Middle Right" => position.middle_right
+        "Bottom Center" => position.bottom_center
+        "Middle Left" => position.middle_left
+
+lineStyle = styleOption == "Dotted" ? line.style_dotted : styleOption == "Dashed" ? line.style_dashed : line.style_solid
+
+inBull() => close > open
+inBear() => close < open
+
+hasBullFVG() => not na(high[2]) and low > high[2]
+hasBearFVG() => not na(low[2]) and high < low[2]
+
+displacementOkBull() => confirmMode == "None" or (confirmMode == "FVG" and hasBullFVG()) or (confirmMode == "ATR" and math.abs(close - open) >= atrMult * ta.atr(atrLen))
+displacementOkBear() => confirmMode == "None" or (confirmMode == "FVG" and hasBearFVG()) or (confirmMode == "ATR" and math.abs(close - open) >= atrMult * ta.atr(atrLen))
+
+// ====== Visual state ======
+var line[] bullLines = array.new_line()
+var label[] bullLabels = array.new_label()
+var line[] bearLines = array.new_line()
+var label[] bearLabels = array.new_label()
+
+drawBullCISD(price, idx) =>
+    if not keepLevels
+        for i = array.size(bullLines) - 1 to 0
+            line.delete(array.get(bullLines, i))
+            array.remove(bullLines, i)
+        for i = array.size(bullLabels) - 1 to 0
+            label.delete(array.get(bullLabels, i))
+            array.remove(bullLabels, i)
+    ln = line.new(idx, price, bar_index + lookAheadBars, price, color=bullCisdColor, width=lineWidth, style=lineStyle)
+    array.push(bullLines, ln)
+    lb = label.new(bar_index + 2, price, bullStr, style=label.style_label_left, textcolor=bullCisdColor, size=size.small)
+    array.push(bullLabels, lb)
+    ln
+
+drawBearCISD(price, idx) =>
+    if not keepLevels
+        for i = array.size(bearLines) - 1 to 0
+            line.delete(array.get(bearLines, i))
+            array.remove(bearLines, i)
+        for i = array.size(bearLabels) - 1 to 0
+            label.delete(array.get(bearLabels, i))
+            array.remove(bearLabels, i)
+    ln = line.new(idx, price, bar_index + lookAheadBars, price, color=bearCisdColor, width=lineWidth, style=lineStyle)
+    array.push(bearLines, ln)
+    lb = label.new(bar_index + 2, price, bearStr, style=label.style_label_left, textcolor=bearCisdColor, size=size.small)
+    array.push(bearLabels, lb)
+    ln
+
+// ====== Sequence tracking (fixed: separate state) ======
+var int   bullCount = 0
+var float bullFirstOpen = na
+var int   bullFirstIndex = na
+
+var int   bearCount = 0
+var float bearFirstOpen = na
+var int   bearFirstIndex = na
+
+if barstate.isconfirmed
+    bool bullNow = inBull()
+    bool bearNow = inBear()
+    bool bullPrev = close[1] > open[1]
+    bool bearPrev = close[1] < open[1]
+
+    // Bullish run
+    if bullNow
+        if not bullPrev
+            bullCount := 1
+            bullFirstOpen := open
+            bullFirstIndex := bar_index
+        else
+            bullCount += 1
+    else
+        bullCount := 0
+        bullFirstOpen := na
+        bullFirstIndex := na
+
+    // Bearish run
+    if bearNow
+        if not bearPrev
+            bearCount := 1
+            bearFirstOpen := open
+            bearFirstIndex := bar_index
+        else
+            bearCount += 1
+    else
+        bearCount := 0
+        bearFirstOpen := na
+        bearFirstIndex := na
+
+// ====== Liquidity via pivots ======
+var float[] bsl = array.new_float()
+var float[] ssl = array.new_float()
+
+ph = ta.pivothigh(swingStrength, swingStrength)
+pl = ta.pivotlow(swingStrength, swingStrength)
+if not na(ph)
+    array.push(bsl, ph)
+if not na(pl)
+    array.push(ssl, pl)
+
+bslSwept = false
+sslSwept = false
+if array.size(bsl) > 0
+    for i = array.size(bsl) - 1 to 0
+        if high > array.get(bsl, i)
+            bslSwept := true
+            array.remove(bsl, i)
+            break
+if array.size(ssl) > 0
+    for i = array.size(ssl) - 1 to 0
+        if low < array.get(ssl, i)
+            sslSwept := true
+            array.remove(ssl, i)
+            break
+
+// ====== Sweep → displacement through sequence-start open ======
+var bool  waiting = false
+var bool  wantBull = false
+var float seqStartPrice = na
+var int   seqStartIndex = na
+
+if barstate.isconfirmed and not waiting
+    // After BSL sweep, expect bearish displacement (CISD-)
+    if bslSwept and not na(bullFirstOpen)
+        waiting := true
+        wantBull := false
+        seqStartPrice := bullFirstOpen
+        seqStartIndex := bullFirstIndex
+    // After SSL sweep, expect bullish displacement (CISD+)
+    if sslSwept and not na(bearFirstOpen)
+        waiting := true
+        wantBull := true
+        seqStartPrice := bearFirstOpen
+        seqStartIndex := bearFirstIndex
+
+var bool cisdBullFormed = false
+var bool cisdBearFormed = false
+var line lastLine = na
+
+cisdBullFormed := false
+cisdBearFormed := false
+
+if waiting
+    if wantBull and close > seqStartPrice and displacementOkBull()
+        lastLine := drawBullCISD(seqStartPrice, seqStartIndex)
+        cisdBullFormed := true
+        waiting := false
+    if not wantBull and close < seqStartPrice and displacementOkBear()
+        lastLine := drawBearCISD(seqStartPrice, seqStartIndex)
+        cisdBearFormed := true
+        waiting := false
+
+// ====== Retest alerts ======
+var bool  waitingRetest = false
+var bool  retestIsBull  = false
+var float retestPx      = na
+var int   retestUntil   = na
+
+if enableRetestAlerts and (cisdBullFormed or cisdBearFormed) and not na(lastLine)
+    waitingRetest := true
+    retestIsBull := cisdBullFormed
+    retestPx := line.get_y1(lastLine)
+    retestUntil := bar_index + retestBars
+
+retestTouched = false
+retestConfirmed = false
+tolAbs = retestPx * (retestPct / 100.0)
+
+if waitingRetest
+    if bar_index <= retestUntil
+        if retestIsBull
+            retestTouched := low <= retestPx + tolAbs
+            retestConfirmed := retestTouched and close > retestPx
+        else
+            retestTouched := high >= retestPx - tolAbs
+            retestConfirmed := retestTouched and close < retestPx
+        if retestConfirmed
+            waitingRetest := false
+    else
+        waitingRetest := false
+
+// ====== Alerts ======
+alertcondition(enableAlerts and cisdBullFormed, "CISD+ formed", "CISD+ formed after SSL sweep.")
+alertcondition(enableAlerts and cisdBearFormed, "CISD- formed", "CISD- formed after BSL sweep.")
+alertcondition(enableRetestAlerts and retestConfirmed and retestIsBull, "CISD+ retest", "Bullish CISD retest confirmed.")
+alertcondition(enableRetestAlerts and retestConfirmed and not retestIsBull, "CISD- retest", "Bearish CISD retest confirmed.")
+
+// ====== Maintain visuals ======
+if barstate.islast
+    if array.size(bullLines) > 0
+        for i = 0 to array.size(bullLines) - 1
+            l = array.get(bullLines, i)
+            x1 = line.get_x1(l)
+            if bar_index - x1 <= updateWindowBars
+                line.set_x2(l, x1 + lookAheadBars)
+    if array.size(bearLines) > 0
+        for i = 0 to array.size(bearLines) - 1
+            l = array.get(bearLines, i)
+            x1 = line.get_x1(l)
+            if bar_index - x1 <= updateWindowBars
+                line.set_x2(l, x1 + lookAheadBars)
+
+// ====== Optional mini table ======
+if showTable and barstate.islast
+    var tbl = table.new(getTablePos(tablePosition), 3, 2)
+    table.cell(tbl, 0, 0, syminfo.ticker + ", " + timeframe.period + " neo|")
+    table.cell(tbl, 1, 0, "Last CISD")
+    blSz = array.size(bullLines)
+    brSz = array.size(bearLines)
+    lastStateTxt = "None"
+    if blSz > 0 and brSz == 0
+        lastStateTxt := "Bullish"
+    else if brSz > 0 and blSz == 0
+        lastStateTxt := "Bearish"
+    else if blSz > 0 and brSz > 0
+        lastBull = array.get(bullLines, blSz - 1)
+        lastBear = array.get(bearLines, brSz - 1)
+        lastStateTxt := line.get_x1(lastBull) > line.get_x1(lastBear) ? "Bullish" : "Bearish"
+    table.cell(tbl, 2, 0, lastStateTxt)
+
